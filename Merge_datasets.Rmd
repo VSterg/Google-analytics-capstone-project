@@ -1,0 +1,352 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+The purpose of this analysis is to determine the correlation between various variables and avoidable death rates.
+The data was gathered from stat.oecd and data worldbank websites.
+
+It should be noted that our data spans a period of 20 years: from 2000 up to 2019.
+Therefore, our dataset includes samples from the same country but different years.
+Of course, no all countries have been gathering data since 2000. As a result, some countries might be overrepresented in our data, since they have been gathering data for a longer time. Nevertheless, I chose to include all of the data since filtering for a specific year or a specific country would result in a very small number of samples.
+
+This notebook joins all of the data.
+The analysis is performed on a different notebook.
+
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+Load avoidable deaths (per 100k population) dataset, discard irrelevant features and convert to wide format.
+
+```{r}
+Avoidable_deaths <- data.frame(read.csv("Avoidable_deaths_per_100k.csv"))
+Avoidable_deaths <-  Avoidable_deaths[ -c(1,3,5,7,10:11)] %>% filter(Measure == "Deaths per 100 000 population (standardised rates)", Variable == "Avoidable mortality (preventable+treatable)") %>% subset(select = c(Country, Year,Value)) %>% rename(Death_rate = Value)
+#%>% reshape(idvar = "Country", timevar = "Year", direction = "wide")
+```
+
+Load alcohol consumption dataset, match values to preventable death rates
+
+```{r}
+Alcohol_consumption <- data.frame(read.csv("Alcohol_consumption.csv")) %>% subset(select = c(Country, Year,Value)) %>% rename(Alcohol_consumption = Value)
+Merged <- left_join(Avoidable_deaths, Alcohol_consumption, by = c("Country" = "Country", "Year" = "Year"))
+```
+
+
+
+Load nutrition related dataset, merge
+```{r}
+Food_consumption <- data.frame(read.csv("Food_consumption.csv")) 
+
+Fat_supply <- filter(Food_consumption, Variable == "Total fat supply") %>% subset(select = c(Country, Year,Value)) %>% rename(Fat_supply = Value) # measure is grams per capita per day
+
+Calories_supply <- filter(Food_consumption, Variable == "Total calories supply") %>% subset(select = c(Country, Year,Value)) %>% rename(Calories_supply = Value) # measure is Kilocalories per capita per day
+
+Protein_supply <- filter(Food_consumption, Variable == "Total protein supply") %>% subset(select = c(Country, Year,Value)) %>% rename(Protein_supply = Value) # measure is grams per capita per day
+
+Sugar_supply <- filter(Food_consumption, Variable == "Sugar supply") %>% subset(select = c(Country, Year,Value)) %>% rename(Sugar_supply = Value) # measure is kilos per capita per year
+
+Vegetable_consumption <- filter(Food_consumption, Variable == "Vegetables consumption, daily (survey)", Measure == "% of population aged 15 years old and over") %>% subset(select = c(Country, Year,Value)) %>% rename(Vegetable_consumption = Value) # measure is % of population aged 15 years old and over
+Vegetable_supply <- filter(Food_consumption, Variable == "Vegetables supply") %>% subset(select = c(Country, Year,Value)) %>% rename(Vegetable_supply = Value) # measure is kilos per capita per day
+
+Fruit_consumption <- filter(Food_consumption, Variable == "Fruits consumption, daily (survey)", Measure == "% of population aged 15 years old and over") %>% subset(select = c(Country, Year,Value)) %>% rename(Fruit_consumption = Value) # measure is % of population aged 15 years old and over
+Fruit_supply <- filter(Food_consumption, Variable == "Fruits supply") %>% subset(select = c(Country, Year,Value)) %>% rename(Fruit_supply = Value) # measure is kilos per capita per day
+
+Merged <- left_join(Merged, Fat_supply, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Calories_supply, by = c("Country" = "Country", "Year" = "Year"))
+
+Merged <- left_join(Merged, Protein_supply, by = c("Country" = "Country", "Year" = "Year"))
+
+Merged <- left_join(Merged, Sugar_supply, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Vegetable_supply, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Vegetable_consumption, by = c("Country" = "Country", "Year" = "Year"))
+
+Merged <- left_join(Merged, Fruit_supply, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Fruit_consumption, by = c("Country" = "Country", "Year" = "Year"))
+
+
+
+```
+
+
+
+
+
+
+
+load gas emissions dataset
+```{r}
+Gas_emissions <- data.frame(read.csv("Gas_emissions.csv")) 
+Area <- data.frame(read.csv("Country_area.csv"))
+Area <- Area[-c(2:64)] %>% rename(Country = ï..Country, Area = X2020 )
+Area <- Area[-c(3)]
+rownames(Area) <- Area[,1]
+Area <- Area[-c(1)]
+
+Methane <- filter(Gas_emissions, Indicator == "Methane (CH4)") %>% subset(select = c(Country, Time,Value)) %>% rename(CH4_emissions = Value) # measure is tonnes of CO2 equivalent
+
+for(i in 1:nrow(Methane)) { # change measure to emissions/sq.m.
+  Country_name <- Methane[i,1]
+  Methane[i,3] <- Methane[i,3]/Area[Country_name,]
+}
+
+Nitrous_oxide <- filter(Gas_emissions, Indicator == "Nitrous oxide (N2O)") %>% subset(select = c(Country, Time,Value)) %>% rename(N2O_emissions = Value) # measure is tonnes of CO2 equivalent
+
+for(i in 1:nrow(Nitrous_oxide)) { # change measure to emissions/sq.m.
+  Country_name <- Nitrous_oxide[i,1]
+  Nitrous_oxide[i,3] <- Nitrous_oxide[i,3]/Area[Country_name,]
+}
+
+Perfluorocarbons  <- filter(Gas_emissions, Indicator == "Perfluorocarbons (PFCs)") %>% subset(select = c(Country, Time,Value)) %>% rename(PFCs_emissions = Value) # measure is tonnes of CO2 equivalent
+
+for(i in 1:nrow(Perfluorocarbons)) { # change measure to emissions/sq.m.
+  Country_name <- Perfluorocarbons[i,1]
+  Perfluorocarbons[i,3] <- Perfluorocarbons[i,3]/Area[Country_name,]
+}
+
+Sulphur  <- filter(Gas_emissions, Indicator == "Sulphur hexafluoride (SF6)") %>% subset(select = c(Country, Time,Value)) %>% rename(SF6_emissions = Value) # measure is tonnes of CO2 equivalent
+
+for(i in 1:nrow(Sulphur)) { # change measure to emissions/sq.m.
+  Country_name <- Sulphur[i,1]
+  Sulphur[i,3] <- Sulphur[i,3]/Area[Country_name,]
+}
+
+Carbon_dioxide <- filter(Gas_emissions, Indicator == "Carbon dioxide (CO2)") %>% subset(select = c(Country, Time,Value)) %>% rename(CO2_emmisions = Value) # measure is tonnes of CO2 equivalent
+
+for(i in 1:nrow(Carbon_dioxide)) { # change measure to emissions/sq.m.
+  Country_name <- Carbon_dioxide[i,1]
+  Carbon_dioxide[i,3] <- Carbon_dioxide[i,3]/Area[Country_name,]
+}
+
+Total_emissions <- filter(Gas_emissions, Indicator == "Total greenhouse gas emissions with LULUCF") %>% subset(select = c(Country, Time,Value)) %>% rename(Total_emissions = Value) # measure is tonnes of CO2 equivalent
+
+for(i in 1:nrow(Total_emissions)) { # change measure to emissions/sq.m.
+  Country_name <- Total_emissions[i,1]
+  Total_emissions[i,3] <- Total_emissions[i,3]/Area[Country_name,]
+}
+
+Merged <- left_join(Merged, Methane, by = c("Country" = "Country", "Year" = "Time"))
+Merged <- left_join(Merged, Nitrous_oxide, by = c("Country" = "Country", "Year" = "Time"))
+Merged <- left_join(Merged, Perfluorocarbons, by = c("Country" = "Country", "Year" = "Time"))
+Merged <- left_join(Merged, Sulphur, by = c("Country" = "Country", "Year" = "Time"))
+Merged <- left_join(Merged, Carbon_dioxide, by = c("Country" = "Country", "Year" = "Time"))
+Merged <- left_join(Merged, Total_emissions, by = c("Country" = "Country", "Year" = "Time"))
+
+
+```
+
+
+
+
+Load overall health  dataset, merge
+```{r}
+Overall_health_lowest <- data.frame(read.csv("Health - Income_Education.csv")) %>% filter(Variable == "Good/very good health, total aged 15+, Income quintile 1 (lowest)") %>% subset(select = c(Country, Year,Value)) %>% rename(good_health_lowest_earners = Value)
+Overall_health_highest <- data.frame(read.csv("Health - Income_Education.csv")) %>% filter(Variable == "Good/very good health, total aged 15+, Income quintile 5 (highest)") %>% subset(select = c(Country, Year,Value)) %>% rename(good_health_highest_earners = Value)
+
+
+Merged <- left_join(Merged, Overall_health_lowest, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Overall_health_highest, by = c("Country" = "Country", "Year" = "Year"))
+
+
+```
+
+
+
+
+Load health expenditure per capita dataset, merge
+```{r}
+
+Health_expenditure <- data.frame(read.csv("Health_expenditure_per_capita.csv")) 
+Health_expenditure <- Health_expenditure[-c(2:44)] %>% rename(Country = ï..Country.Name ) %>% gather(Year, Value, -c(Country))
+Health_expenditure <- Health_expenditure[order(Health_expenditure$Country),] %>% rename(Expenditure_per_capita = Value ) %>% mutate(Year = str_sub(Year, 2, -1))
+Health_expenditure$Year <- as.numeric(as.character(Health_expenditure$Year))  # Convert one variable to numeric
+Merged <- left_join(Merged, Health_expenditure, by = c("Country" = "Country", "Year" = "Year"))
+
+
+
+```
+
+
+Load health insurance dataset, merge
+adds two columns: percent of population with total insurance and percent of population with pharmaceutical goods insurance
+```{r}
+
+Health_insurance_total <- data.frame(read.csv("Health_insurance%.csv")) %>% filter(Measure == "% of total population", Variable == "Total health care") %>% subset(select = c(Country, Year,Value)) %>% rename(percent_total_insured = Value)
+Health_insurance_pharm <- data.frame(read.csv("Health_insurance%.csv")) %>% filter(Measure == "% of total population", Variable == "Pharmaceutical goods") %>% subset(select = c(Country, Year,Value)) %>% rename(percent_pharm_insured = Value)
+Merged <- left_join(Merged, Health_insurance_total, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Health_insurance_pharm, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load transport infastructure investment dataset, merge
+adds two columns: total inland infastructure investment and roads investment
+```{r}
+
+Infastructire_investment_total <- data.frame(read.csv("Infastructure_inverstment_maintenance.csv")) %>% filter(Measure == "Constant Euro", Variable == "Total inland transport infrastructure investment") %>% subset(select = c(Country, Year,Value)) %>% rename(Total_investment = Value)
+Infastructire_investment_roads <- data.frame(read.csv("Infastructure_inverstment_maintenance.csv")) %>% filter(Measure == "Constant Euro", Variable == "Total road spending") %>% subset(select = c(Country, Year,Value)) %>% rename(Roads_investment = Value)
+
+
+
+Merged <- left_join(Merged, Infastructire_investment_total, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Infastructire_investment_roads, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+
+Load relative minimum wage dataset, merge
+adds two columns: minimum to median ratio and minimum to mean ratio
+```{r}
+
+Minimum_to_mean_wage <- data.frame(read.csv("Minimum_wage_relative_to_average.csv")) %>% filter(Series == "Mean") %>% subset(select = c(Country, Time ,Value)) %>% rename(Min2mean_wage = Value, Year = Time)
+Minimum_to_median_wage <- data.frame(read.csv("Minimum_wage_relative_to_average.csv")) %>% filter(Series == "Median") %>% subset(select = c(Country, Time ,Value)) %>% rename(Min2median_wage = Value, Year = Time)
+
+
+
+Merged <- left_join(Merged, Minimum_to_mean_wage, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Minimum_to_median_wage, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load obesity dataset, merge
+adds two columns: percentage of population that is obese (measured) and percentage of population that is overweight (measured)
+```{r}
+
+Obese_stats <- data.frame(read.csv("Overweight-obese%.csv")) %>% filter(Measure == "% of total population",Variable == "Obese population, measured") %>% subset(select = c(Country, Year ,Value)) %>% rename(obese_percent = Value)
+Overweight_stats <- data.frame(read.csv("Overweight-obese%.csv")) %>% filter(Measure == "% of total population",Variable == "Overweight population, measured") %>% subset(select = c(Country, Year ,Value)) %>% rename(overweight_percent = Value)
+
+
+
+Merged <- left_join(Merged, Obese_stats, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Overweight_stats, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load Passenger-million kilometers dataset, merge
+adds two columns: Passenger-million kilometers transport by buses and coaches and Passenger-million kilometers transport by passenger car
+maybe add a third column : ratio of car to public transport
+```{r}
+
+Passenger_public_transport <- data.frame(read.csv("Passenger-kilometer.csv")) %>% filter(Variable == "Road passenger transport by buses and coaches")  %>% subset(select = c(Country, Year ,Value)) %>% rename(Public_transport = Value)
+Passenger_car_transport <- data.frame(read.csv("Passenger-kilometer.csv")) %>% filter(Variable == "Road passenger transport by passenger cars")  %>% subset(select = c(Country, Year ,Value)) %>% rename(Car_transport = Value)
+
+
+
+
+
+Merged <- left_join(Merged, Passenger_public_transport, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Passenger_car_transport, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load pesticide sales dataset, merge
+adds one column: pesticide sales / sq. m.
+```{r}
+
+Pesticide_sales <- data.frame(read.csv("Pesticide_sales.csv")) %>% filter(Indicator == "Total sales of agricultural pesticides")  %>% subset(select = c(Country, Time ,Value)) %>% rename(Pesticide_sales = Value, Year = Time)
+
+for(i in 1:nrow(Methane)) { # change measure to pesticides/sq.m.
+  Country_name <- Pesticide_sales[i,1]
+  Pesticide_sales[i,3] <- Pesticide_sales[i,3]/Area[Country_name,]
+}
+
+
+Merged <- left_join(Merged, Pesticide_sales, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load Tobacco_consumption  dataset, merge
+adds two columns: percentage of daily smokers aged 15+ and percentage of daily smokers aged 15-24
+```{r}
+
+Tobacco_consumption <- data.frame(read.csv("Tobacco_consumption.csv")) %>% filter(Measure == "% of population aged 15+ who are daily smokers")  %>% subset(select = c(Country, Year ,Value)) %>% rename(Total_smokers_percentage = Value)
+Tobacco_consumption_young <- data.frame(read.csv("Tobacco_consumption.csv")) %>% filter(Measure == "% of population aged 15-24 years old who are daily smokers")  %>% subset(select = c(Country, Year ,Value)) %>% rename(Total_young_smokers_percentage = Value)
+
+
+
+
+Merged <- left_join(Merged, Tobacco_consumption, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Tobacco_consumption_young, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load Urban / Rural population  dataset, merge
+adds two columns: percentage of daily smokers aged 15+ and percentage of daily smokers aged 15-24
+```{r}
+
+Urban_rural_population <- data.frame(read.csv("Urban_rural_population.csv")) %>% rename(Country = Entity, Urban_percentage = Urban.Percentage, Rural_percentage = Rural.percentage)  %>% subset(select = c(Country, Year ,Urban_percentage, Rural_percentage))
+
+
+
+
+Merged <- left_join(Merged, Urban_rural_population, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load waste generation dataset, merge
+adds one column: Total waste per capita generated
+```{r}
+
+Waste_generation <- data.frame(read.csv("Waste_generation.csv")) %>% filter(Variable == "Total waste per capita")  %>% subset(select = c(Country, Year , Value)) %>% rename(Waste_per_capita = Value)
+
+
+Merged <- left_join(Merged, Waste_generation, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Load waste generation dataset, merge
+adds one column: Total waste per capita generated
+```{r}
+
+Wastewater_generation_and_discharge <- data.frame(read.csv("Wastewater_generation_and_discharge.csv")) %>% filter(Variable == "Generation of wastewater - All sources", Pollutant == "Volume")  %>% subset(select = c(Country, Year , Value)) %>% rename(Wastewater_volume = Value)
+Wastewater_generation_and_discharge_urban <- data.frame(read.csv("Wastewater_generation_and_discharge.csv")) %>% filter(Variable == "Urban wastewater, all sources, total discharged", Pollutant == "Volume")  %>% subset(select = c(Country, Year , Value)) %>% rename(Wastewater_urban = Value)
+Wastewater_generation_and_discharge_untreated <- data.frame(read.csv("Wastewater_generation_and_discharge.csv")) %>% filter(Variable == "Urban wastewater, all sources, discharged without treatment", Pollutant == "Volume")  %>% subset(select = c(Country, Year , Value)) %>% rename(Wastewater_untreated = Value)
+
+
+
+
+Merged <- left_join(Merged, Wastewater_generation_and_discharge, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Wastewater_generation_and_discharge_urban, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Wastewater_generation_and_discharge_untreated, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+
+Load wastewater treatment dataset, merge
+adds two columns: percent of population connected to water treatment and percent of population not connected to water treatment
+```{r}
+
+Water_treatment_not_connected <- data.frame(read.csv("Water_treatment_population%.csv")) %>% filter(Variable =="Not connected to public sewerage or independent treatment")  %>% subset(select = c(Country, Year , Value)) %>% rename(no_water_treatment = Value)
+Water_treatment_connected <- data.frame(read.csv("Water_treatment_population%.csv")) %>% filter(Variable == "Total treatment ( = PUBTOTTR + INDEPDTR)")  %>% subset(select = c(Country, Year , Value)) %>% rename(water_treatment = Value)
+
+
+
+
+Merged <- left_join(Merged, Water_treatment_not_connected, by = c("Country" = "Country", "Year" = "Year"))
+Merged <- left_join(Merged, Water_treatment_connected, by = c("Country" = "Country", "Year" = "Year"))
+
+```
+
+Confirm that there are no duplicates in our list (Country and Year columns are enough for this)
+```{r}
+check1 <- Merged[,1:2]
+a <- duplicated(check1)
+
+unique(a)
+```
+
+save merged dataset for future use
+
+```{r}
+write.csv(Merged,'Merged_health_data.csv')
+
+```
