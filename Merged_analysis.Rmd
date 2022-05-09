@@ -1,0 +1,663 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*.
+
+To produce merged dataset, run Create_merged.Rmd and save the results.
+
+Having merged all the relevant data, the next step is to do data analysis to find the correlations between our variables and avoidable death rates.
+
+Clear workspace, load merged dataset and libraries.
+
+```{r}
+rm(list = ls())
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+Merged <- data.frame(read.csv("Merged_health_data.csv"))
+Merged[,1] <- NULL
+
+```
+
+Add some new features related to nutrition - our original dataset contained information on per capita supply of protein/fat/etc. However, using these as a measure of nutrition would be incorrect, as these values are influenced by other factors such as GDP. A better measure would be the ratio between fat supply and calories consumed per capita.
+
+Add Car transportation investment to public transportation investment ratio.
+
+Add a revised water treatment column.
+
+Also, create the Merged_filtered dataset which excludes samples with a death rate in the top 2.5% of values for that column. The reason for this is that a few samples had exceptionally high death rates that might skew results.
+
+```{r}
+#Cutoffs for Death_rate filtering
+death_rate_upper_quan <- 0.975
+death_rate_bottom_quan <- 0
+death_rate_bottom_cutoff = quantile(Merged$Death_rate, death_rate_bottom_quan)
+death_rate_upper_cutoff = quantile(Merged$Death_rate, death_rate_upper_quan)
+
+Merged <-   mutate(Merged,Fat_relative = Fat_supply / Calories_supply) %>% mutate(Protein_relative = Protein_supply / Calories_supply) %>% mutate(Sugar_relative = Sugar_supply / Calories_supply) %>% mutate(Vegetable_relative = Vegetable_supply / Calories_supply) %>% mutate(Fruit_relative = Fruit_supply / Calories_supply) %>% mutate(Car_to_public_transport = Car_transport / Public_transport) %>% mutate(Water_treatment_revised = 100 - no_water_treatment)
+
+Merged_filtered <- Merged %>% filter(Death_rate >= death_rate_bottom_cutoff,Death_rate <= death_rate_upper_cutoff)
+column_names <- colnames(Merged)
+
+```
+
+First approach - visual inspection (for each variable separately)
+
+A lot of variables don't exhibit a steady trend - for example, there might be a positive correlation between the variable and death rates for countries with low death rate while the inverse holds true for countries with high death rates. This suggests it might be useful to separate our dataset into subsets based on death rates.
+
+There are some variables that only exhibit one steady trend before stabilising - some examples are expenditure per capita, water treatment and fruit supply relative to overall calories supply - these variables are a lot easier to interpret.
+
+```{r}
+variable_idx <- 41 #this should be >= 4 (first three columns are Country, Year and Death_rate - the target variable) and <= 49 (total number of columns in Merged dataset)
+
+variable_name <- column_names[variable_idx]
+
+
+Pair <- Merged[c(1:3, variable_idx)] %>% drop_na() %>% rename(Variable = variable_name)
+country_names <- unique(Pair$Country)
+
+
+
+Pair_filtered <-  Merged_filtered[c(1:3, variable_idx)] %>% drop_na() %>% rename(Variable = variable_name)
+
+
+# Plot both the filtered and unfiltered versions
+ggplot(data = Pair_filtered) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+ggplot(data = Pair) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+```
+
+Next, perform regression analysis on subsets of the data (we will be dropping rows with NA values, so performing regression analysis with all variables would result in very few samples being used). Regression analysis is performed on 4 datasets: one containing all of the valid samples, one containing valid samples belonging to the bottom 25% of death rates among all samples, one containing valid samples belonging to the top 25% of death rates among all samples and one containing valid samples belonging to the middle 50% of death rates among all samples.
+
+```{r}
+
+# Don't run this - skip directly to next code chunk
+
+relevant <- Merged_filtered[,c(3,25)] %>% drop_na() # manually pick variables to keep for regression
+relevant_bottom25 <- relevant %>% filter(Death_rate <= quantile(relevant$Death_rate,0.25))
+relevant_mid50 <- relevant %>% filter(Death_rate < quantile(relevant$Death_rate,0.75), Death_rate > quantile(relevant$Death_rate,0.25))
+relevant_top25 <- relevant %>% filter(Death_rate >= quantile(relevant$Death_rate,0.75))
+Merged_scaled <- data.frame(scale(relevant, center = TRUE, scale = TRUE))
+Merged_scaled_bottom25 <- data.frame(scale(relevant_bottom25, center = TRUE, scale = TRUE))
+Merged_scaled_mid50 <- data.frame(scale(relevant_mid50, center = TRUE, scale = TRUE))
+Merged_scaled_top25 <- data.frame(scale(relevant_top25, center = TRUE, scale = TRUE))
+Merged_scaled$Death_rate <- relevant$Death_rate
+Merged_scaled_bottom25$Death_rate <- relevant_bottom25$Death_rate
+Merged_scaled_mid50$Death_rate <- relevant_mid50$Death_rate
+Merged_scaled_top25$Death_rate <- relevant_top25$Death_rate
+
+
+g <-lm(Death_rate ~ ., data= Merged_scaled)
+g_bottom25 <-lm(Death_rate ~ ., data= Merged_scaled_bottom25)
+g_mid50 <-lm(Death_rate ~ ., data= Merged_scaled_mid50)
+g_top25 <-lm(Death_rate ~ ., data= Merged_scaled_top25)
+summary(g)
+summary(g_bottom25)
+summary(g_mid50)
+summary(g_top25)
+
+
+```
+
+Do the above for each variable independently - save residuals, standard deviation and coefficients.
+
+As far as predicting death rates goes, performing regression analysis with just one variable is of course suboptimal. However at this point the goal of the analysis is not to predict death rates. Instead, I just want to examine how good of a predictor each variable is. Therefore there is no need for multiple regression analysis.
+
+This allows us to study each variable separately as well as examine whether trends stay the same for all subsets of our data.
+
+```{r}
+all_coef <- NULL
+all_residuals <- NULL
+all_coef_bottom25 <- NULL
+all_residuals_bottom25 <- NULL
+all_coef_mid50 <- NULL
+all_residuals_mid50 <- NULL
+all_coef_top25 <- NULL
+all_residuals_top25 <- NULL
+
+for (i in 4:length(Merged)){
+  relevant <- Merged_filtered[,c(3,i)] %>% drop_na() # manually pick variables to keep for regression
+  relevant_bottom25 <- relevant %>% filter(Death_rate <= quantile(relevant$Death_rate,0.25))
+  relevant_mid50 <- relevant %>% filter(Death_rate < quantile(relevant$Death_rate,0.75), Death_rate > quantile(relevant$Death_rate,0.25))
+  relevant_top25 <- relevant %>% filter(Death_rate >= quantile(relevant$Death_rate,0.75))
+  Merged_scaled <- data.frame(scale(relevant, center = TRUE, scale = TRUE))
+  Merged_scaled_bottom25 <- data.frame(scale(relevant_bottom25, center = TRUE, scale = TRUE))
+  Merged_scaled_mid50 <- data.frame(scale(relevant_mid50, center = TRUE, scale = TRUE))
+  Merged_scaled_top25 <- data.frame(scale(relevant_top25, center = TRUE, scale = TRUE))
+  Merged_scaled$Death_rate <- relevant$Death_rate
+  Merged_scaled_bottom25$Death_rate <- relevant_bottom25$Death_rate
+  Merged_scaled_mid50$Death_rate <- relevant_mid50$Death_rate
+  Merged_scaled_top25$Death_rate <- relevant_top25$Death_rate
+
+
+  g <-lm(Death_rate ~ ., data= Merged_scaled)
+  g_bottom25 <-lm(Death_rate ~ ., data= Merged_scaled_bottom25)
+  g_mid50 <-lm(Death_rate ~ ., data= Merged_scaled_mid50)
+  g_top25 <-lm(Death_rate ~ ., data= Merged_scaled_top25)
+  
+  all_coef <- rbind(all_coef, g$coefficients)
+  res <- g$residuals
+  corr <- cor.test(relevant$Death_rate,relevant[,2])
+  corr <- corr$estimate
+  all_residuals <- rbind(all_residuals, c(sd(res),summary(g)$r.squared,corr))
+  
+  all_coef_bottom25 <- rbind(all_coef_bottom25, g_bottom25$coefficients)
+  res <- g_bottom25$residuals
+  corr <- cor.test(relevant_bottom25$Death_rate,relevant_bottom25[,2])
+  corr <- corr$estimate
+  all_residuals_bottom25 <- rbind(all_residuals_bottom25, c(sd(res),summary(g_bottom25)$r.squared,corr))
+  
+  all_coef_mid50 <- rbind(all_coef_mid50, g_mid50$coefficients)
+  res <- g_mid50$residuals
+  corr <- cor.test(relevant_mid50$Death_rate,relevant_mid50[,2])
+  corr <- corr$estimate
+  all_residuals_mid50 <- rbind(all_residuals_mid50, c(sd(res),summary(g_mid50)$r.squared,corr))
+  
+  all_coef_top25 <- rbind(all_coef_top25, g_top25$coefficients)
+  res <- g_top25$residuals
+  corr <- cor.test(relevant_top25$Death_rate,relevant_top25[,2])
+  corr <- corr$estimate
+  all_residuals_top25 <- rbind(all_residuals_top25, c(sd(res),summary(g_top25)$r.squared,corr))
+}
+Variable <- column_names[4:length(column_names)]
+
+all_coef <- as.data.frame(all_coef) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+all_coef_bottom25 <- as.data.frame(all_coef_bottom25) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+all_coef_mid50 <- as.data.frame(all_coef_mid50) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+all_coef_top25 <- as.data.frame(all_coef_top25) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+
+#mean_sd <- sd(Merged_scaled$Death_rate - mean(Merged_scaled$Death_rate))
+#mean_sd_bottom25 <- sd(Merged_scaled_bottom25$Death_rate - mean(Merged_scaled_bottom25$Death_rate))
+#mean_sd_mid50 <- sd(Merged_scaled_mid50$Death_rate - mean(Merged_scaled_mid50$Death_rate))
+#mean_sd_top25 <- sd(Merged_scaled_top25$Death_rate - mean(Merged_scaled_top25$Death_rate))
+
+all_residuals <- as.data.frame(all_residuals) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd)
+all_residuals_bottom25 <- as.data.frame(all_residuals_bottom25) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd_bottom25)
+all_residuals_mid50 <- as.data.frame(all_residuals_mid50) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd_mid50)
+all_residuals_top25 <- as.data.frame(all_residuals_top25) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd_top25)
+
+
+measures <- left_join(all_coef,all_residuals, by = c("Variable" = "Variable"))
+measures_bottom25 <- left_join(all_coef_bottom25,all_residuals_bottom25, by = c("Variable" = "Variable"))
+measures_mid50 <- left_join(all_coef_mid50,all_residuals_mid50, by = c("Variable" = "Variable"))
+measures_top25 <- left_join(all_coef_top25,all_residuals_top25, by = c("Variable" = "Variable"))
+
+measures <- measures[, c(3, 1, 2, 6, 4, 5)]
+measures_bottom25 <- measures_bottom25[, c(3, 1, 2, 6, 4, 5)]
+measures_mid50 <- measures_mid50[, c(3, 1, 2, 6, 4, 5)]
+measures_top25 <- measures_top25[, c(3, 1, 2, 6, 4, 5)]
+```
+
+Compute top 15 factors by each measure
+
+```{r}
+measures_names <- colnames(measures)
+measures_names <- measures_names[-c(1,2)]
+
+Top_factors <- data.frame(matrix(ncol = length(measures_names), nrow = nrow(measures)))
+Top_factors_bottom25 <- data.frame(matrix(ncol = length(measures_names), nrow = nrow(measures)))
+Top_factors_mid50 <- data.frame(matrix(ncol = length(measures_names), nrow = nrow(measures)))
+Top_factors_top25 <- data.frame(matrix(ncol = length(measures_names), nrow = nrow(measures)))
+
+colnames(Top_factors) <- measures_names
+colnames(Top_factors_bottom25) <- measures_names
+colnames(Top_factors_mid50) <- measures_names
+colnames(Top_factors_top25) <- measures_names
+
+#Order variables by each of the measures computed (so as to pick the most important factors according to each measure)
+
+Top_factors['Variable_coef'] <- Variable[order(abs(measures$Variable_coef), decreasing = TRUE)]
+Top_factors['cor'] <- Variable[order(abs(measures$cor), decreasing = TRUE)]
+Top_factors['Variable_sd'] <- Variable[order(measures$Variable_sd, decreasing = FALSE)]
+Top_factors['Mul_R_sq'] <- Variable[order(measures$Mul_R_sq, decreasing = TRUE)]
+#Top_factors['Explained_sd'] <- Variable[order(measures$Explained_sd, decreasing = TRUE)]
+
+Top_factors_bottom25['Variable_coef'] <- Variable[order(abs(measures_bottom25$Variable_coef), decreasing = TRUE)]
+Top_factors_bottom25['cor'] <- Variable[order(abs(measures_bottom25$cor), decreasing = TRUE)]
+Top_factors_bottom25['Variable_sd'] <- Variable[order(measures_bottom25$Variable_sd, decreasing = FALSE)]
+Top_factors_bottom25['Mul_R_sq'] <- Variable[order(measures_bottom25$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_bottom25['Explained_sd'] <- Variable[order(measures_bottom25$Explained_sd, decreasing = TRUE)]
+
+Top_factors_mid50['Variable_coef'] <- Variable[order(abs(measures_mid50$Variable_coef), decreasing = TRUE)]
+Top_factors_mid50['cor'] <- Variable[order(abs(measures_mid50$cor), decreasing = TRUE)]
+Top_factors_mid50['Variable_sd'] <- Variable[order(measures_mid50$Variable_sd, decreasing = FALSE)]
+Top_factors_mid50['Mul_R_sq'] <- Variable[order(measures_mid50$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_mid50['Explained_sd'] <- Variable[order(measures_mid50$Explained_sd, decreasing = TRUE)]
+
+Top_factors_top25['Variable_coef'] <- Variable[order(abs(measures_top25$Variable_coef), decreasing = TRUE)]
+Top_factors_top25['cor'] <- Variable[order(abs(measures_top25$cor), decreasing = TRUE)]
+Top_factors_top25['Variable_sd'] <- Variable[order(measures_top25$Variable_sd, decreasing = FALSE)]
+Top_factors_top25['Mul_R_sq'] <- Variable[order(measures_top25$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_top25['Explained_sd'] <- Variable[order(measures_top25$Explained_sd, decreasing = TRUE)]
+
+
+#Keep only the top 15 factors from each column
+Top_factors <- Top_factors[1:15,]
+Top_factors_bottom25 <- Top_factors_bottom25[1:15,]
+Top_factors_mid50 <- Top_factors_mid50[1:15,]
+Top_factors_top25 <- Top_factors_top25[1:15,]
+
+
+```
+
+Some plots
+
+```{r}
+Var_name <- column_names[45] # pick variable to plot
+
+Merged_filtered_bottom25 <- Merged_filtered %>% filter(Death_rate <= quantile(relevant$Death_rate,0.3))
+Merged_filtered_mid50 <- Merged_filtered %>% filter(Death_rate < quantile(relevant$Death_rate,0.75), Death_rate > quantile(relevant$Death_rate,0.25))
+Merged_filtered_top25 <- Merged_filtered %>% filter(Death_rate >= quantile(relevant$Death_rate,0.7))
+
+ggplot(data = Merged_filtered) + geom_point( aes(x = Merged_filtered[[Var_name]],y = Death_rate))  +geom_smooth(aes(x = Merged_filtered[[Var_name]],y = Death_rate)) + xlab(gsub("_", " ",Var_name)) + ylab("Death rate")
+
+ggplot(data = Merged_filtered_bottom25) + geom_point( aes(x = Merged_filtered_bottom25[[Var_name]],y = Death_rate))  +geom_smooth(aes(x = Merged_filtered_bottom25[[Var_name]],y = Death_rate)) + xlab(gsub("_", " ",Var_name)) + ylab("Death rate")
+
+ggplot(data = Merged_filtered_mid50) + geom_point( aes(x = Merged_filtered_mid50[[Var_name]],y = Death_rate))  +geom_smooth(aes(x = Merged_filtered_mid50[[Var_name]],y = Death_rate)) + xlab(gsub("_", " ",Var_name)) + ylab("Death rate")
+
+ggplot(data = Merged_filtered_top25) + geom_point( aes(x = Merged_filtered_top25[[Var_name]],y = Death_rate))  +geom_smooth(aes(x = Merged_filtered_top25[[Var_name]],y = Death_rate)) + xlab(gsub("_", " ",Var_name)) + ylab("Death rate")
+
+
+```
+
+Now do the inverse. Create 4 subsets based on the value of each variable for each sample. Next, compute the measures we computed earlier. At this stage we also compute some distribution measures for each subset of data, specifically the median, mean and the 25% and 75% percentiles values.
+
+```{r}
+
+all_coef_inv <- NULL
+all_residuals_inv <- NULL
+all_coef_bottom50_inv <- NULL
+all_residuals_bottom50_inv <- NULL
+all_coef_mid50_inv <- NULL
+all_residuals_mid50_inv <- NULL
+all_coef_top50_inv <- NULL
+all_residuals_top50_inv <- NULL
+distribution <- matrix(0, 46, 4)
+distribution_bottom50 <- matrix(0, 46, 4)
+distribution_mid50 <- matrix(0, 46, 4)
+distribution_top50 <- matrix(0, 46, 4)
+
+for (i in 4:length(Merged)){
+  relevant <- Merged_filtered[,c(3,i)] %>% drop_na() # manually pick variables to keep for regression
+  relevant_bottom50 <- relevant %>% filter(relevant[,2] <= quantile(relevant[,2],0.5))
+  relevant_mid50 <- relevant %>% filter(relevant[,2] < quantile(relevant[,2],0.75), relevant[,2] > quantile(relevant[,2],0.25))
+  relevant_top50 <- relevant %>% filter(relevant[,2] >= quantile(relevant[,2],0.5))
+  
+  
+  distribution[i-3,1:3] <- quantile(relevant[,1],probs = c(0.25,0.5,0.75))
+  distribution[i-3,4] <- mean(relevant[,1])
+
+  distribution_bottom50[i-3,1:3] <- quantile(relevant_bottom50[,1],probs = c(0.25,0.5,0.75))
+  distribution_bottom50[i-3,4] <- mean(relevant_bottom50[,1])
+  
+  distribution_mid50[i-3,1:3] <- quantile(relevant_mid50[,1],probs = c(0.25,0.5,0.75))
+  distribution_mid50[i-3,4] <- mean(relevant_mid50[,1])
+  
+  distribution_top50[i-3,1:3] <- quantile(relevant_top50[,1],probs = c(0.25,0.5,0.75))
+  distribution_top50[i-3,4] <- mean(relevant_top50[,1])
+  
+  Merged_scaled <- data.frame(scale(relevant, center = TRUE, scale = TRUE))
+  Merged_scaled_bottom50 <- data.frame(scale(relevant_bottom50, center = TRUE, scale = TRUE))
+  Merged_scaled_mid50 <- data.frame(scale(relevant_mid50, center = TRUE, scale = TRUE))
+  Merged_scaled_top50 <- data.frame(scale(relevant_top50, center = TRUE, scale = TRUE))
+  Merged_scaled$Death_rate <- relevant$Death_rate
+  Merged_scaled_bottom50$Death_rate <- relevant_bottom50$Death_rate
+  Merged_scaled_mid50$Death_rate <- relevant_mid50$Death_rate
+  Merged_scaled_top50$Death_rate <- relevant_top50$Death_rate
+  if (length(unique(Merged_scaled_bottom50[,2])) == 1){
+    Merged_scaled_bottom50[,2] <- 1
+  }
+  if (length(unique(Merged_scaled_mid50[,2])) == 1){
+    Merged_scaled_mid50[,2] <- 1
+  }
+  if (length(unique(Merged_scaled_top50[,2])) == 1){
+    Merged_scaled_top50[,2] <- 1
+  }
+  g <-lm(Death_rate ~ ., data= Merged_scaled)
+  g_bottom50 <-lm(Death_rate ~ ., data= Merged_scaled_bottom50)
+  g_mid50 <-lm(Death_rate ~ ., data= Merged_scaled_mid50)
+  g_top50 <-lm(Death_rate ~ ., data= Merged_scaled_top50)
+  
+  all_coef_inv <- rbind(all_coef_inv, g$coefficients)
+  res <- g$residuals
+  corr <- cor.test(relevant$Death_rate,relevant[,2])
+  corr <- corr$estimate
+  all_residuals_inv <- rbind(all_residuals_inv, c(sd(res),summary(g)$r.squared,corr))
+  
+  all_coef_bottom50_inv <- rbind(all_coef_bottom50_inv, g_bottom50$coefficients)
+  res <- g_bottom50$residuals
+  corr <- cor.test(relevant_bottom50$Death_rate,relevant_bottom50[,2])
+  corr <- corr$estimate
+  all_residuals_bottom50_inv <- rbind(all_residuals_bottom50_inv, c(sd(res),summary(g_bottom50)$r.squared,corr))
+  
+  all_coef_mid50_inv <- rbind(all_coef_mid50_inv, g_mid50$coefficients)
+  res <- g_mid50$residuals
+  corr <- cor.test(relevant_mid50$Death_rate,relevant_mid50[,2])
+  corr <- corr$estimate
+  all_residuals_mid50_inv <- rbind(all_residuals_mid50_inv, c(sd(res),summary(g_mid50)$r.squared,corr))
+  
+  all_coef_top50_inv <- rbind(all_coef_top50_inv, g_top50$coefficients)
+  res <- g_top50$residuals
+  corr <- cor.test(relevant_top50$Death_rate,relevant_top50[,2])
+  corr <- corr$estimate
+  all_residuals_top50_inv <- rbind(all_residuals_top50_inv, c(sd(res),summary(g_top50)$r.squared,corr))
+} #end of for loop
+
+
+Variable <- column_names[4:length(column_names)]
+
+all_coef_inv <- as.data.frame(all_coef_inv) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+all_coef_bottom50_inv <- as.data.frame(all_coef_bottom50_inv) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+all_coef_mid50_inv <- as.data.frame(all_coef_mid50_inv) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+all_coef_top50_inv <- as.data.frame(all_coef_top50_inv) %>% rename(Variable_coef = Alcohol_consumption,Intercept_coef = "(Intercept)") %>% cbind(Variable)
+
+#MISTAKE! THIS SHOULD BE COMPUTED INSIDE THE FOR LOOP
+#mean_sd <- sd(Merged_scaled$Death_rate - mean(Merged_scaled$Death_rate))
+#mean_sd_bottom50 <- sd(Merged_scaled_bottom50$Death_rate - mean(Merged_scaled_bottom50$Death_rate))
+#mean_sd_mid50 <- sd(Merged_scaled_mid50$Death_rate - mean(Merged_scaled_mid50$Death_rate))
+#mean_sd_top50 <- sd(Merged_scaled_top50$Death_rate - mean(Merged_scaled_top50$Death_rate))
+
+# explained variance is wrong
+all_residuals_inv <- as.data.frame(all_residuals_inv) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd)
+all_residuals_bottom50_inv <- as.data.frame(all_residuals_bottom50_inv) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd_bottom50)
+all_residuals_mid50_inv <- as.data.frame(all_residuals_mid50_inv) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable) #%>% mutate(Explained_sd = 1 - Variable_sd/mean_sd_mid50)
+all_residuals_top50_inv <- as.data.frame(all_residuals_top50_inv) %>% rename(Variable_sd = V1, Mul_R_sq = V2) %>% cbind(Variable)# %>% mutate(Explained_sd = 1 - Variable_sd/mean_sd_top50)
+
+
+measures_inv <- left_join(all_coef_inv,all_residuals_inv, by = c("Variable" = "Variable")) %>% cbind(distribution) %>% rename(Q1 = 7,Median = 8, Q3 = 9, Mean = 10)
+measures_bottom50_inv <- left_join(all_coef_bottom50_inv,all_residuals_bottom50_inv, by = c("Variable" = "Variable")) %>% cbind(distribution_bottom50) %>% rename(Q1 = 7,Median = 8, Q3 = 9, Mean = 10)
+measures_mid50_inv <- left_join(all_coef_mid50_inv,all_residuals_mid50_inv, by = c("Variable" = "Variable")) %>% cbind(distribution_mid50) %>% rename(Q1 = 7,Median = 8, Q3 = 9, Mean = 10)
+measures_top50_inv <- left_join(all_coef_top50_inv,all_residuals_top50_inv, by = c("Variable" = "Variable")) %>% cbind(distribution_top50) %>% rename(Q1 = 7,Median = 8, Q3 = 9, Mean = 10)
+
+
+#measures_inv <- measures_inv[, c(3, 1, 2, 6, 4, 5, 7, 8, 9, 10)]
+#measures_bottom50_inv <- measures_bottom50_inv[, c(3, 1, 2, 6, 4, 5, 7, 8, 9, 10)]
+#measures_mid50_inv <- measures_mid50_inv[, c(3, 1, 2, 6, 4, 5, 7, 8, 9, 10)]
+#measures_top50_inv <- measures_top50_inv[, c(3, 1, 2, 6, 4, 5, 7, 8, 9, 10)]
+```
+
+Calculate distribution variations (Q1, median, Q3 and mean) between different brackets.
+
+```{r}
+Q1_diff <- data.frame(matrix(ncol = 0, nrow = 46))
+Q2_diff <- data.frame(matrix(ncol = 0, nrow = 46))
+Q3_diff <- data.frame(matrix(ncol = 0, nrow = 46))
+Mean_diff <- data.frame(matrix(ncol = 0, nrow = 46))
+
+
+Q1_diff['Variable'] <- Variable
+Q1_diff['bottom_mid'] <- measures_bottom50_inv$Q1 - measures_mid50_inv$Q1
+Q1_diff['bottom_top'] <- measures_bottom50_inv$Q1 - measures_top50_inv$Q1
+Q1_diff['mid_top'] <- measures_mid50_inv$Q1 - measures_top50_inv$Q1
+
+Q2_diff['Variable'] <- Variable
+Q2_diff['bottom_mid'] <- measures_bottom50_inv$Median - measures_mid50_inv$Median
+Q2_diff['bottom_top'] <- measures_bottom50_inv$Median - measures_top50_inv$Median
+Q2_diff['mid_top'] <- measures_mid50_inv$Median - measures_top50_inv$Median
+
+Q3_diff['Variable'] <- Variable
+Q3_diff['bottom_mid'] <- measures_bottom50_inv$Q3 - measures_mid50_inv$Q3
+Q3_diff['bottom_top'] <- measures_bottom50_inv$Q3 - measures_top50_inv$Q3
+Q3_diff['mid_top'] <- measures_mid50_inv$Q3 - measures_top50_inv$Q3
+
+Mean_diff['Variable'] <- Variable
+Mean_diff['bottom_mid'] <- measures_bottom50_inv$Mean - measures_mid50_inv$Mean
+Mean_diff['bottom_top'] <- measures_bottom50_inv$Mean - measures_top50_inv$Mean
+Mean_diff['mid_top'] <- measures_mid50_inv$Mean - measures_top50_inv$Mean
+```
+
+Compute top factors from each measure for the inverse process.
+
+```{r}
+measures_names <- colnames(measures_inv)
+#measures_names <- measures_names[-c(1,2)]
+
+Top_factors_inv <- data.frame(matrix(ncol = length(Top_factors), nrow = nrow(measures_inv)))
+Top_factors_bottom50_inv <- data.frame(matrix(ncol = length(Top_factors), nrow = nrow(measures_inv)))
+Top_factors_mid50_inv <- data.frame(matrix(ncol = length(Top_factors), nrow = nrow(measures_inv)))
+Top_factors_top50_inv <- data.frame(matrix(ncol = length(Top_factors), nrow = nrow(measures_inv)))
+
+colnames(Top_factors_inv) <- colnames(Top_factors)
+colnames(Top_factors_bottom50_inv) <- colnames(Top_factors)
+colnames(Top_factors_mid50_inv) <- colnames(Top_factors)
+colnames(Top_factors_top50_inv) <- colnames(Top_factors)
+
+
+Top_factors_inv['Variable_coef'] <- Variable[order(abs(measures_inv$Variable_coef), decreasing = TRUE)]
+Top_factors_inv['cor'] <- Variable[order(abs(measures_inv$cor), decreasing = TRUE)]
+Top_factors_inv['Variable_sd'] <- Variable[order(measures_inv$Variable_sd, decreasing = FALSE)]
+Top_factors_inv['Mul_R_sq'] <- Variable[order(measures_inv$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_inv['Explained_sd'] <- Variable[order(measures_inv$Explained_sd, decreasing = TRUE)]
+
+Top_factors_bottom50_inv['Variable_coef'] <- Variable[order(abs(measures_bottom50_inv$Variable_coef), decreasing = TRUE)]
+Top_factors_bottom50_inv['cor'] <- Variable[order(abs(measures_bottom50_inv$cor), decreasing = TRUE)]
+Top_factors_bottom50_inv['Variable_sd'] <- Variable[order(measures_bottom50_inv$Variable_sd, decreasing = FALSE)]
+Top_factors_bottom50_inv['Mul_R_sq'] <- Variable[order(measures_bottom50_inv$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_bottom50_inv['Explained_sd'] <- Variable[order(measures_bottom50_inv$Explained_sd, decreasing = TRUE)]
+
+Top_factors_mid50_inv['Variable_coef'] <- Variable[order(abs(measures_mid50_inv$Variable_coef), decreasing = TRUE)]
+Top_factors_mid50_inv['cor'] <- Variable[order(abs(measures_mid50_inv$cor), decreasing = TRUE)]
+Top_factors_mid50_inv['Variable_sd'] <- Variable[order(measures_mid50_inv$Variable_sd, decreasing = FALSE)]
+Top_factors_mid50_inv['Mul_R_sq'] <- Variable[order(measures_mid50_inv$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_mid50_inv['Explained_sd'] <- Variable[order(measures_mid50_inv$Explained_sd, decreasing = TRUE)]
+
+Top_factors_top50_inv['Variable_coef'] <- Variable[order(abs(measures_top50_inv$Variable_coef), decreasing = TRUE)]
+Top_factors_top50_inv['cor'] <- Variable[order(abs(measures_top50_inv$cor), decreasing = TRUE)]
+Top_factors_top50_inv['Variable_sd'] <- Variable[order(measures_top50_inv$Variable_sd, decreasing = FALSE)]
+Top_factors_top50_inv['Mul_R_sq'] <- Variable[order(measures_top50_inv$Mul_R_sq, decreasing = TRUE)]
+#Top_factors_top50_inv['Explained_sd'] <- Variable[order(measures_top50_inv$Explained_sd, decreasing = TRUE)]
+
+# Keep top 15 factors for each measure
+Top_factors_inv <- Top_factors_inv[1:15,]
+Top_factors_bottom50_inv <- Top_factors_bottom50_inv[1:15,]
+Top_factors_mid50_inv <- Top_factors_mid50_inv[1:15,]
+Top_factors_top50_inv <- Top_factors_top50_inv[1:15,]
+
+```
+
+Do the same for distribution measures
+
+```{r}
+Top_factors_dist_Q1 <- data.frame(matrix(ncol = 0, nrow = nrow(measures_inv)))
+Top_factors_dist_Q2 <- data.frame(matrix(ncol = 0, nrow = nrow(measures_inv)))
+Top_factors_dist_Q3 <- data.frame(matrix(ncol = 0, nrow = nrow(measures_inv)))
+Top_factors_dist_mean <- data.frame(matrix(ncol = 0, nrow = nrow(measures_inv)))
+
+Top_factors_dist_Q1['bottom_mid'] <- Variable[order(abs(Q1_diff$bottom_mid), decreasing = TRUE)]
+Top_factors_dist_Q1['mid_top'] <- Variable[order(abs(Q1_diff$mid_top), decreasing = TRUE)]
+Top_factors_dist_Q1['bottom_top'] <- Variable[order(abs(Q1_diff$bottom_top), decreasing = TRUE)]
+
+Top_factors_dist_Q2['bottom_mid'] <- Variable[order(abs(Q2_diff$bottom_mid), decreasing = TRUE)]
+Top_factors_dist_Q2['mid_top'] <- Variable[order(abs(Q2_diff$mid_top), decreasing = TRUE)]
+Top_factors_dist_Q2['bottom_top'] <- Variable[order(abs(Q2_diff$bottom_top), decreasing = TRUE)]
+
+Top_factors_dist_Q3['bottom_mid'] <- Variable[order(abs(Q3_diff$bottom_mid), decreasing = TRUE)]
+Top_factors_dist_Q3['mid_top'] <- Variable[order(abs(Q3_diff$mid_top), decreasing = TRUE)]
+Top_factors_dist_Q3['bottom_top'] <- Variable[order(abs(Q3_diff$bottom_top), decreasing = TRUE)]
+
+Top_factors_dist_mean['bottom_mid'] <- Variable[order(abs(Mean_diff$bottom_mid), decreasing = TRUE)]
+Top_factors_dist_mean['mid_top'] <- Variable[order(abs(Mean_diff$mid_top), decreasing = TRUE)]
+Top_factors_dist_mean['bottom_top'] <- Variable[order(abs(Mean_diff$bottom_top), decreasing = TRUE)]
+
+Top_factors_dist_Q1 <- Top_factors_dist_Q1[1:15,]
+Top_factors_dist_Q2 <- Top_factors_dist_Q2[1:15,]
+Top_factors_dist_Q3 <- Top_factors_dist_Q3[1:15,]
+Top_factors_dist_mean <- Top_factors_dist_mean[1:15,]
+```
+
+Count frequency of each variable appearing in the top (10) factors - save into three variables: one for measures computed from the whole dataset, one for measures computed from bracketed datasets and one for measures computed from distribution variations.
+
+```{r}
+counts <- Variable
+
+Top_factors_freq_all <- data.frame(matrix(ncol = 0, nrow = length(Variable)))
+Top_factors_freq_all['Variable'] <- Variable
+Top_factors_freq_all['Frequency'] <- 0
+
+#for bracketed datasets
+Top_factors_freq <- data.frame(matrix(ncol = 0, nrow = length(Variable)))
+Top_factors_freq['Variable'] <- Variable
+Top_factors_freq['Frequency'] <- 0
+
+Top_factors_freq_dist <- data.frame(matrix(ncol = 0, nrow = length(Variable)))
+Top_factors_freq_dist['Variable'] <- Variable
+Top_factors_freq_dist['Frequency'] <- 0
+
+tmp_factors <- Top_factors[1:10,] #drop explained_sd column
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq_all$Frequency <- Top_factors_freq_all$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_bottom25[1:10,] #drop explained_sd column
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq$Frequency <- Top_factors_freq$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_mid50[1:10,] #drop explained_sd column
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq$Frequency <- Top_factors_freq$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_top25[1:10,] #drop explained_sd column
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq$Frequency <- Top_factors_freq$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_inv[1:10,] #drop useless columns
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq_all$Frequency <- Top_factors_freq_all$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_bottom50_inv[1:10,] #drop useless columns
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq$Frequency <- Top_factors_freq$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_mid50_inv[1:10,] #drop useless columns
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq$Frequency <- Top_factors_freq$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_top50_inv[1:10,] #drop useless columns
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq$Frequency <- Top_factors_freq$Frequency + tmp_freq
+
+
+#Distribution measures top factors
+tmp_factors <- Top_factors_dist_Q1[1:10,] 
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq_dist$Frequency <- Top_factors_freq_dist$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_dist_Q2[1:10,] 
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq_dist$Frequency <- Top_factors_freq_dist$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_dist_Q3[1:10,] 
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq_dist$Frequency <- Top_factors_freq_dist$Frequency + tmp_freq
+
+tmp_factors <- Top_factors_dist_mean[1:10,] 
+tmp_freq = sapply(tmp_factors, function(x) {
+  sapply(counts, function(y) {
+    sum(grepl(y, x))
+  })
+})
+tmp_freq <- rowSums(tmp_freq)
+Top_factors_freq_dist$Frequency <- Top_factors_freq_dist$Frequency + tmp_freq
+```
+
+No need to run the chunks below.
+
+Filter for a specific year
+
+```{r}
+year_to_keep <- 2016
+Pair <- filter(Pair, Pair$Year == year_to_keep)
+Pair_filtered <- filter(Pair_filtered, Pair_filtered$Year == year_to_keep)
+ggplot(data = Pair_filtered) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+ggplot(data = Pair) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+
+```
+
+Or a specific country
+
+```{r}
+country_to_keep <- country_names[13]
+Pair2 <- filter(Pair, Pair$Country == country_to_keep)
+Pair_filtered2 <- filter(Pair_filtered, Pair_filtered$Country == country_to_keep)
+ggplot(data = Pair_filtered2) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+ggplot(data = Pair2) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+
+```
+
+```{r}
+Pair_filtered_ordered <- Pair_filtered[order(Pair_filtered$Death_rate),]
+Pair_ordered <- Pair[order(Pair$Variable),]
+time = 1:length(Pair$Variable)
+time_filtered = 1:length(Pair_filtered$Variable)
+Pair_filtered_ordered$Variable <- scale(Pair_filtered_ordered$Variable)
+Pair_filtered_ordered$Death_rate <- scale(Pair_filtered_ordered$Death_rate)
+
+plot(time_filtered,Pair_filtered_ordered$Death_rate,type = 'l',col="red") 
+lines(time_filtered, Pair_filtered_ordered$Variable, col="green", lwd=2)
+#ggplot(data = Pair2) + geom_point( aes(x = Variable,y = Death_rate))  +geom_smooth(aes(x = Variable,y = Death_rate)) + xlab(gsub("_", " ",variable_name)) + ylab("Death rate")
+```
+
+Save top factor frequency for future reference
+
+```{r}
+write.csv(Top_factors_freq,'Top_factors_frequency_bracketed.csv')
+write.csv(Top_factors_freq_all,'Top_factors_frequency_all.csv')
+write.csv(Top_factors_freq_dist,'Top_factors_frequency_distribution.csv')
+```
